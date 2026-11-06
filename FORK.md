@@ -39,7 +39,7 @@ Run it from the official Zentty or another terminal, **not from a Zentty Dev pan
 
 The build is signed ad hoc (we don't have Zenjoy's Developer ID), so macOS asks again for privacy permissions after each rebuild.
 
-Upstream's `--adhoc` mode leaves the hardened runtime on. Its library validation rejects the ad hoc signed Sparkle and Sentry frameworks, so the app crashes at launch with "Library not loaded … different Team IDs". The fork's `stv/release` fixes this with a separate commit that sets `ENABLE_HARDENED_RUNTIME=NO` for ad hoc builds. Keep that commit when rebasing.
+Upstream's `--adhoc` mode leaves the hardened runtime on. Its library validation rejects the ad hoc signed Sparkle and Sentry frameworks, so the app crashes at launch with "Library not loaded … different Team IDs". The fork's `stv/release` fixes this with a separate commit that sets `ENABLE_HARDENED_RUNTIME=NO` for ad hoc builds. It's also proposed upstream as [PR #184](https://github.com/dedene/zentty/pull/184). Keep that commit when rebasing until #184 is in a release; after that, the rebase applies it as a no-op.
 
 Options: `--tag vX.Y.Z` targets a specific release, `--no-build` only rebases and pushes, and `--no-push` keeps the branch local.
 
