@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# fork-sync: rebuild the stv-io patched Zentty on top of the latest upstream release.
+#
+# Rebases stv/release (fork commits only) onto the newest upstream release tag,
+# rebuilds GhosttyKit when scripts/ghosttykit.lock changed, pushes the branch to
+# the fork, and installs the result as "Zentty Dev.app" via build-dev-release.
+# See FORK.md.
+#
+# Usage: scripts/fork-sync [--tag vX.Y.Z] [--check] [--no-build] [--no-push]
+#   --check     only report whether an update / merge has happened; change nothing
+#   --tag       rebase onto this tag instead of the latest upstream release
+#   --no-build  rebase and push only
+#   --no-push   do not push stv/release to origin
+
+set -euo pipefail
+
+UPSTREAM_REPO="dedene/zentty"
+BRANCH="stv/release"
+PR_NUMBER="${ZENTTY_FORK_PR:-183}"
+
+tag="" check=0 build=1 push=1
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tag) tag="$2"; shift 2 ;;
+    --check) check=1; shift ;;
+    --no-build) build=0; shift ;;
+    --no-push) push=0; shift ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+git remote get-url upstream >/dev/null 2>&1 || {
+  echo "No 'upstream' remote. Add it: git remote add upstream https://github.com/${UPSTREAM_REPO}.git" >&2
+  exit 1
+}
+
+git fetch -q upstream --tags
+git fetch -q origin
+
+if [[ -z "$tag" ]]; then
+  tag="$(gh release view --repo "$UPSTREAM_REPO" --json tagName -q .tagName)"
+fi
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "Tag $tag not found" >&2; exit 1; }
+
+current_base="$(git describe --tags --abbrev=0 "$BRANCH" 2>/dev/null || echo unknown)"
+echo "Latest upstream release: $tag   ($BRANCH is based on $current_base)"
+
+if [[ -n "$PR_NUMBER" ]]; then
+  pr_state="$(gh pr view "$PR_NUMBER" --repo "$UPSTREAM_REPO" --json state -q .state 2>/dev/null || echo UNKNOWN)"
+  echo "Upstream PR #$PR_NUMBER: $pr_state"
+  if [[ "$pr_state" == "MERGED" ]]; then
+    echo "  -> The feature is upstream. Once a release contains it, switch back to the official Zentty.app"
+    echo "     and stop using this script (see FORK.md, 'When the PR is merged')."
+  fi
+fi
+
+if [[ "$check" == 1 ]]; then
+  [[ "$current_base" == "$tag" ]] && echo "Up to date." || echo "Update available: run scripts/fork-sync"
+  exit 0
+fi
+
+if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo "Working tree has local changes; commit or stash them first." >&2
+  exit 1
+fi
+
+git switch -q "$BRANCH"
+old_lock="$(git show HEAD:scripts/ghosttykit.lock)"
+
+if [[ "$current_base" != "$tag" ]]; then
+  echo "Rebasing $BRANCH onto $tag ..."
+  # Replays only the fork commits; commits already upstream are dropped.
+  if ! git rebase "$tag"; then
+    echo >&2
+    echo "Rebase stopped on a conflict. Fix it, 'git rebase --continue', then rerun scripts/fork-sync." >&2
+    exit 1
+  fi
+else
+  echo "$BRANCH is already on $tag."
+fi
+
+echo "Fork commits on top of $tag:"
+git log --oneline "$tag..HEAD"
+
+if [[ "$push" == 1 ]]; then
+  git push -q --force-with-lease origin "$BRANCH"
+  echo "Pushed $BRANCH to origin."
+fi
+
+[[ "$build" == 1 ]] || exit 0
+
+new_lock="$(cat scripts/ghosttykit.lock)"
+zig_version="$(sed -n 's/^zig_version=//p' scripts/ghosttykit.lock)"
+if [[ "$old_lock" != "$new_lock" || ! -d FrameworksLocal/GhosttyKit.xcframework ]]; then
+  echo "GhosttyKit lock changed (or framework missing): rebuilding with zig $zig_version ..."
+  mise install -q "zig@$zig_version"
+  mise exec "zig@$zig_version" -- ./scripts/build_ghosttykit.sh
+fi
+
+scripts/build-dev-release --adhoc
